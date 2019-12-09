@@ -1,0 +1,16 @@
+envs:
+  detect: &detect
+    - USE_SSL=False
+    - POSTGRES_IP=postgres
+
+services:
+  detect:
+    image: 107849844305.dkr.ecr.eu-west-1.amazonaws.com/corti/detect-cpu:v1.1.0
+    env: *detect
+    # volumes
+    # restart
+    # depends_on
+    # ports
+    # stop_signal
+  postgres:
+    image: postgres
