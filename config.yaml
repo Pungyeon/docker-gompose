@@ -4,10 +4,12 @@ envs:
     - POSTGRES_IP=postgres
 
 services:
-  cockroach:
-    command: "cockroach start --insecure"
-    driver: EXEC
-    on_stop: "cockroach quit --insecure"
+  # cockroach:
+  #   command: "cockroach start --insecure"
+  #   driver: EXEC
+  #   on_stop: "cockroach quit --insecure"
+  #   depends_on:
+  #     - cockroach
 #  detect:
 #    image: 107849844305.dkr.ecr.eu-west-1.amazonaws.com/corti/detect-cpu:v1.1.0
 #    env: *detect
@@ -22,5 +24,3 @@ services:
     image: postgres
     ports:
       - 5432:5432
-    depends_on:
-      - cockroach

@@ -5,14 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/strslice"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/go-connections/nat"
-	"github.com/docker/docker/client"
-	"gopkg.in/yaml.v2"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -20,6 +13,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/api/types/strslice"
+	"github.com/docker/docker/api/types/volume"
+	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
+	"gopkg.in/yaml.v2"
 )
 
 func returnError(errs ...error) error {
@@ -49,22 +51,29 @@ type Definition struct {
 }
 
 type Service struct {
-	Image string
+	Image      string
 	Entrypoint string
-	Env []string
-	Volumes []string
-	Driver string
-	Command string
-	OnStop string `yaml:"on_stop"`
-	Ports []string
-	DependsOn []string `yaml:"depends_on"`
+	Env        []string
+	Volumes    []string
+	Driver     string
+	Command    string
+	OnStop     string `yaml:"on_stop"`
+	Ports      []string
+	DependsOn  []string `yaml:"depends_on"`
+}
+
+func (s *Service) GetImage() string {
+	if len(strings.Split(s.Image, "/")) != 0 {
+		return s.Image
+	}
+	return "docker.io/library/" + s.Image
 }
 
 func (s *Service) GetEntrypoint() strslice.StrSlice {
 	if s.Entrypoint == "" {
 		return nil
 	}
-	return strslice.StrSlice{ s.Entrypoint }
+	return strslice.StrSlice{s.Entrypoint}
 }
 
 func (s *Service) GetPortBindings() (nat.PortMap, error) {
@@ -78,7 +87,7 @@ func (s *Service) GetPortBindings() (nat.PortMap, error) {
 			portmap[pb.Container] = []nat.PortBinding{}
 		}
 		portmap[pb.Container] = append(portmap[pb.Container], nat.PortBinding{
-			HostIP: "0.0.0.0",
+			HostIP:   "0.0.0.0",
 			HostPort: pb.Host,
 		})
 	}
@@ -87,7 +96,7 @@ func (s *Service) GetPortBindings() (nat.PortMap, error) {
 
 type Binding struct {
 	Container nat.Port
-	Host string
+	Host      string
 }
 
 func NewPortBinding(portStr string) (Binding, error) {
@@ -166,12 +175,12 @@ func (status Status) String() string {
 
 const (
 	UNKNOWN_DRIVER Driver = 0
-	DOCKER Driver = 1
-	EXEC Driver = 2
+	DOCKER         Driver = 1
+	EXEC           Driver = 2
 
 	UNKNOWN_STATUS Status = 0
-	RUNNING Status = 1
-	STOPPED Status = 2
+	RUNNING        Status = 1
+	STOPPED        Status = 2
 )
 
 type Process struct {
@@ -179,12 +188,12 @@ type Process struct {
 	Driver
 	Status
 	OnStop string
-	PID int
+	PID    int
 }
 
 type Volume struct {
-	Source string
-	Target string
+	Source   string
+	Target   string
 	ReadOnly bool
 }
 
@@ -194,8 +203,8 @@ func NewVolume(volumeString string) (Volume, error) {
 		return Volume{}, fmt.Errorf("invalid volume path: %v", volumeString)
 	}
 	return Volume{
-		Source: paths[0],
-		Target: paths[1],
+		Source:   paths[0],
+		Target:   paths[1],
 		ReadOnly: isReadOnly(paths),
 	}, nil
 }
@@ -220,12 +229,12 @@ type App struct {
 	cli         *client.Client
 	dependants  chan Dependency
 	serviceDone chan string
-	wg sync.WaitGroup
+	wg          sync.WaitGroup
 
-	Volumes     map[string]string
-	NetworkID   string
-	Containers  map[string]Process
-	Processes   map[string]Process
+	Volumes    map[string]string
+	NetworkID  string
+	Containers map[string]Process
+	Processes  map[string]Process
 }
 
 func NewApp() (*App, error) {
@@ -289,9 +298,9 @@ func newDepedencyHandlers() (chan Dependency, chan string) {
 		var dependants []Dependency
 		for {
 			select {
-			case d := <- waiter:
+			case d := <-waiter:
 				dependants = append(dependants, d)
-			case service := <- doneService:
+			case service := <-doneService:
 				for _, d := range dependants {
 					if d.service == service {
 						d.channel <- true
@@ -376,7 +385,7 @@ func (app *App) stopProcesses() {
 func (app *App) clean() {
 	app.stopProcesses()
 
-	duration := time.Second*15
+	duration := time.Second * 15
 	for name, proc := range app.Containers {
 		fmt.Printf("\rStopping %s [PENDING]", name)
 		if err := app.cli.ContainerStop(context.Background(), proc.ID, &duration); err != nil {
@@ -399,7 +408,7 @@ func (app *App) clean() {
 		app.NetworkID = ""
 	}
 
-	for name, id:= range app.Volumes {
+	for name, id := range app.Volumes {
 		fmt.Printf("\rRemoving Volume: %s [PENDING]", id)
 		if err := app.cli.VolumeRemove(context.Background(), id, false); err != nil {
 			log.Println(err)
@@ -500,7 +509,7 @@ func (app *App) createDockerVolume(vol Volume) error {
 	if _, ok := app.Volumes[vol.Source]; !ok {
 		log.Printf("creating local volume: %s\n", vol.Source)
 		v, err := app.cli.VolumeCreate(context.Background(), volume.VolumeCreateBody{
-			Driver:     "local",
+			Driver: "local",
 		})
 		if err != nil {
 			return err
@@ -522,6 +531,7 @@ func (app *App) createProcesses(services map[string]Service) error {
 	for name, service := range services {
 		start, err := app.createProcess(name, service)
 		if err != nil {
+			app.wg.Done()
 			return err
 		}
 		if len(service.DependsOn) == 0 {
@@ -587,7 +597,7 @@ func (app *App) createExecProcess(name string, service Service) (func() error, e
 		}
 		app.Processes[name] = Process{
 			ID:     fmt.Sprintf("%d", cmd.Process.Pid),
-			PID: cmd.Process.Pid,
+			PID:    cmd.Process.Pid,
 			Driver: EXEC,
 			Status: RUNNING,
 			OnStop: service.OnStop,
@@ -617,16 +627,33 @@ func (app *App) createContainer(name string, service Service) (func() error, err
 
 func (app *App) createNewContainer(name string, service Service) (func() error, error) {
 	logContainerStatus(name, "PENDING", false)
-	c, err := NewContainerBuilder(name).
+	builder := NewContainerBuilder(name).
 		SetConfig(service).
 		AddVolumes(service, app.Volumes).
-		AddPortBindings(service).
-		Build(app.cli)
+		AddPortBindings(service)
+
+	fmt.Println("then thing")
+	c, err := builder.Build(app.cli)
 	if err != nil {
-		return nilfn, err
+		if !strings.Contains(err.Error(), "No such image") {
+			return nilfn, err
+		}
+		fmt.Println("no such image")
+		reader, err := app.cli.ImagePull(context.Background(), service.GetImage(), types.ImagePullOptions{})
+		if err != nil {
+			fmt.Println("holy fuckeroni:", err)
+			return nilfn, err
+		}
+		io.Copy(os.Stdout, reader)
+		defer reader.Close()
+		c, err = builder.Build(app.cli)
+		if err != nil {
+			fmt.Println("oh shit it's down here?")
+			return nilfn, err
+		}
 	}
 	app.Containers[name] = Process{
-		ID: c.ID,
+		ID:     c.ID,
 		Driver: DOCKER,
 		Status: RUNNING,
 	}
@@ -642,11 +669,11 @@ func (app *App) createNewContainer(name string, service Service) (func() error, 
 }
 
 type ContainerBuilder struct {
-	err error
-	ctx context.Context
-	config *container.Config
+	err        error
+	ctx        context.Context
+	config     *container.Config
 	hostconfig *container.HostConfig
-	name string
+	name       string
 }
 
 func NewContainerBuilder(name string) ContainerBuilder {
@@ -660,9 +687,9 @@ func NewContainerBuilder(name string) ContainerBuilder {
 
 func (builder ContainerBuilder) SetConfig(service Service) ContainerBuilder {
 	builder.config = &container.Config{
-		Hostname:        builder.name,
-		Image:           service.Image,
-		Env: service.Env,
+		Hostname:   builder.name,
+		Image:      service.Image,
+		Env:        service.Env,
 		Entrypoint: service.GetEntrypoint(),
 	}
 	return builder
@@ -704,9 +731,9 @@ func parseVolumes(service Service, volumes map[string]string) ([]mount.Mount, er
 		}
 
 		mounts = append(mounts, mount.Mount{
-			Target: vol.Target,
-			Source: source,
-			Type: "volume",
+			Target:   vol.Target,
+			Source:   source,
+			Type:     "volume",
 			ReadOnly: vol.ReadOnly,
 		})
 	}
