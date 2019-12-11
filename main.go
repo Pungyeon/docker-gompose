@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -119,6 +120,7 @@ func main() {
 	}
 	if err := HandleErrors(logErrors,
 		app.Run(os.Args[1]),
+		app.Wait(),
 		app.Save(),
 	); err != nil {
 		log.Println(err)
@@ -218,6 +220,7 @@ type App struct {
 	cli         *client.Client
 	dependants  chan Dependency
 	serviceDone chan string
+	wg sync.WaitGroup
 
 	Volumes     map[string]string
 	NetworkID   string
@@ -231,6 +234,11 @@ func NewApp() (*App, error) {
 		return &App{}, err
 	}
 	return loadLockFile(cli)
+}
+
+func (app *App) Wait() error {
+	app.wg.Wait()
+	return nil
 }
 
 func (app *App) AddDependency(d Dependency) {
@@ -282,10 +290,13 @@ func newDepedencyHandlers() (chan Dependency, chan string) {
 		for {
 			select {
 			case d := <- waiter:
+				fmt.Println("Received waiter:", d)
 				dependants = append(dependants, d)
 			case service := <- doneService:
+				fmt.Println("service up:", service)
 				for _, d := range dependants {
 					if d.service == service {
+						fmt.Println("sending service to dependant:", service)
 						d.channel <- true
 					}
 				}
@@ -510,17 +521,41 @@ func logContainerStatus(name, status string, final bool) {
 }
 
 func (app *App) createProcesses(services map[string]Service) error {
+	app.wg.Add(len(services))
 	for name, service := range services {
 		start, err := app.createProcess(name, service)
 		if err != nil {
 			return err
 		}
-		if err := start(); err != nil {
-			log.Println(err)
+		if len(service.DependsOn) == 0 {
+			app.invokeStart(start, name)
+			continue
 		}
-		logContainerStatus(name, "RUNNING", true)
+		go func() {
+			app.waitForDependencies(service, name)
+			app.invokeStart(start, name)
+		}()
 	}
 	return nil
+}
+
+func (app *App) waitForDependencies(service Service, name string) {
+	for _, srv := range service.DependsOn {
+		if !app.IsServiceRunning(srv) {
+			dep := NewDependency(srv)
+			app.AddDependency(dep)
+			dep.Wait()
+		}
+	}
+}
+
+func (app *App) invokeStart(start func() error, name string) {
+	app.serviceDone <- name
+	if err := start(); err != nil {
+		log.Println(err)
+	}
+	logContainerStatus(name, "RUNNING", true)
+	app.wg.Done()
 }
 
 func (app *App) IsServiceRunning(service string) bool {
