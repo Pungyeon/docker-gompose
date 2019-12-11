@@ -290,13 +290,10 @@ func newDepedencyHandlers() (chan Dependency, chan string) {
 		for {
 			select {
 			case d := <- waiter:
-				fmt.Println("Received waiter:", d)
 				dependants = append(dependants, d)
 			case service := <- doneService:
-				fmt.Println("service up:", service)
 				for _, d := range dependants {
 					if d.service == service {
-						fmt.Println("sending service to dependant:", service)
 						d.channel <- true
 					}
 				}
@@ -690,7 +687,6 @@ func (builder ContainerBuilder) AddPortBindings(service Service) ContainerBuilde
 		builder.err = err
 		return builder
 	}
-	fmt.Println(binds)
 	builder.hostconfig.PortBindings = binds
 	return builder
 }
