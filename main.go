@@ -50,6 +50,24 @@ type Definition struct {
 	Services map[string]Service
 }
 
+type RestartPolicy struct {
+	Condition string
+	MaximumRetries int `yaml:"max_attempts"`
+}
+
+func (policy RestartPolicy) ToDockerPolicy() container.RestartPolicy {
+	if policy.Condition == "always" {
+		return container.RestartPolicy{
+			Name:             policy.Condition,
+			MaximumRetryCount: 0,
+		}
+	}
+	return container.RestartPolicy{
+		Name:              policy.Condition,
+		MaximumRetryCount: policy.MaximumRetries,
+	}
+}
+
 type Service struct {
 	Image      string
 	Entrypoint string
@@ -60,6 +78,8 @@ type Service struct {
 	OnStop     string `yaml:"on_stop"`
 	Ports      []string
 	DependsOn  []string `yaml:"depends_on"`
+	RestartPolicy RestartPolicy `yaml:"restart"`
+	StopSignal string `yaml:"stop_signal"`
 }
 
 func (s *Service) GetImage() string {
@@ -187,8 +207,9 @@ type Process struct {
 	ID string
 	Driver
 	Status
-	OnStop string
-	PID    int
+	OnStop     string
+	PID        int
+	StopSignal string
 }
 
 type Volume struct {
@@ -347,16 +368,35 @@ func help() {
 }
 
 func (app *App) stop() error {
-	duration := time.Second * 15
 	for name, proc := range app.Containers {
-		if err := app.cli.ContainerStop(context.Background(), proc.ID, &duration); err != nil {
+		if err := app.stopContainer(name, proc); err != nil {
 			log.Println(err)
-		} else {
-			proc.Status = STOPPED
-			app.Containers[name] = proc
 		}
 	}
 	app.stopProcesses()
+	return nil
+}
+
+func (app *App) stopContainer(name string, proc Process) error {
+	duration := time.Second * 15
+	if proc.StopSignal == "" {
+		if err := app.cli.ContainerStop(context.Background(), proc.ID, &duration); err != nil {
+			return err
+		}
+		return app.stopContainerInStore(name, proc)
+	}
+	if err := app.cli.ContainerKill(context.Background(), proc.ID, proc.StopSignal); err != nil {
+		log.Println(err)
+		if err := app.cli.ContainerKill(context.Background(), proc.ID, "SIGKILL"); err != nil {
+			return err
+		}
+	}
+	return app.stopContainerInStore(name, proc)
+}
+
+func (app *App) stopContainerInStore(name string, proc Process) error {
+	proc.Status = STOPPED
+	app.Containers[name] = proc
 	return nil
 }
 
@@ -384,11 +424,8 @@ func (app *App) stopProcesses() {
 
 func (app *App) clean() {
 	app.stopProcesses()
-
-	duration := time.Second * 15
 	for name, proc := range app.Containers {
-		fmt.Printf("\rStopping %s [PENDING]", name)
-		if err := app.cli.ContainerStop(context.Background(), proc.ID, &duration); err != nil {
+		if err := app.stopContainer(name, proc); err != nil {
 			log.Println(err)
 		}
 		fmt.Printf("\rRemoving %s [STOPPED]", name)
@@ -601,6 +638,7 @@ func (app *App) createExecProcess(name string, service Service) (func() error, e
 			Driver: EXEC,
 			Status: RUNNING,
 			OnStop: service.OnStop,
+			StopSignal: service.StopSignal,
 		}
 		return nil
 	}, nil
@@ -629,6 +667,7 @@ func (app *App) createNewContainer(name string, service Service) (func() error, 
 	logContainerStatus(name, "PENDING", false)
 	builder := NewContainerBuilder(name).
 		SetConfig(service).
+		AddRestartPolicy(service).
 		AddVolumes(service, app.Volumes).
 		AddPortBindings(service)
 
@@ -656,6 +695,7 @@ func (app *App) createNewContainer(name string, service Service) (func() error, 
 		ID:     c.ID,
 		Driver: DOCKER,
 		Status: RUNNING,
+		StopSignal: service.StopSignal,
 	}
 	logContainerStatus(name, "CREATED", false)
 
@@ -692,6 +732,14 @@ func (builder ContainerBuilder) SetConfig(service Service) ContainerBuilder {
 		Env:        service.Env,
 		Entrypoint: service.GetEntrypoint(),
 	}
+	return builder
+}
+
+func (builder ContainerBuilder) AddRestartPolicy(service Service) ContainerBuilder {
+	if 	service.RestartPolicy.Condition == "" {
+		return builder
+	}
+	builder.hostconfig.RestartPolicy = service.RestartPolicy.ToDockerPolicy()
 	return builder
 }
 

@@ -4,23 +4,24 @@ envs:
     - POSTGRES_IP=postgres
 
 services:
-  # cockroach:
-  #   command: "cockroach start --insecure"
-  #   driver: EXEC
-  #   on_stop: "cockroach quit --insecure"
-  #   depends_on:
-  #     - cockroach
-#  detect:
-#    image: 107849844305.dkr.ecr.eu-west-1.amazonaws.com/corti/detect-cpu:v1.1.0
-#    env: *detect
-#    volumes:
-#      - /opt/corti/data:/opt/corti/data
-#    ports:
-#      - 50051:50051
-    # restart
-    # depends_on
-    # stop_signal
+  cockroach:
+    command: "cockroach start --insecure"
+    driver: EXEC
+    on_stop: "cockroach quit --insecure"
+    depends_on:
+     - cockroach
+  detect:
+    image: 107849844305.dkr.ecr.eu-west-1.amazonaws.com/corti/detect-cpu:v1.1.0
+    env: *detect
+    volumes:
+      - /opt/corti/data:/opt/corti/data
+    ports:
+      - 50051:50051
   postgres:
+    restart:
+      condition: "always"
+      max_attempts: 5
+    stop_signal: SIGKILL
     image: postgres
     ports:
       - 5432:5432
