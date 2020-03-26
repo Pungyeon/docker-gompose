@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package syntheto;
+
+message ConfigStatus {
+
+}
+
+message Report {}
+
+service Syntheto {
+    rpc Config(ConfigStatus) returns (Report) {}
+}

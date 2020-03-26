@@ -5,11 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Pungyeon/docker-gompose/utils"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/volume"
-	"github.com/docker/docker/client"
-	"gopkg.in/yaml.v2"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -17,7 +13,26 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Pungyeon/docker-gompose/utils"
+	"github.com/corticph/go-logging/pkg/logging"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/volume"
+	"github.com/docker/docker/client"
+	"gopkg.in/yaml.v2"
 )
+
+type Result struct {
+	err    error
+	output *bytes.Buffer
+}
+
+func NewResult() *Result {
+	return &Result{
+		err:    nil,
+		output: &bytes.Buffer{},
+	}
+}
 
 type App struct {
 	cli         *client.Client
@@ -37,6 +52,20 @@ func NewApp() (*App, error) {
 		return &App{}, err
 	}
 	return loadLockFile(cli)
+}
+
+func (app *App) Monitor() {
+	go func() {
+		for {
+			select {
+			case <- time.Tick(time.Second*3):
+
+				//if err := app.ps(os.Stdout); err != nil {
+				//	logging.Err(err.Error())
+				//}
+			}
+		}
+	}()
 }
 
 func (app *App) Wait() error {
@@ -68,7 +97,7 @@ func createAppFromLockFile(cli *client.Client) (*App, error) {
 	lock, err := ioutil.ReadFile(".gompose.lock")
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Println("no lock file found, creating new environment")
+			logging.Info("no lock file found, creating new environment")
 			return &App{
 				Volumes:    map[string]string{},
 				Containers: map[string]Process{},
@@ -117,11 +146,30 @@ func (app *App) Save() error {
 func (app *App) Run(cmd string) error {
 	switch cmd {
 	case "start":
-		return app.start()
+		return app.start(&bytes.Buffer{})
 	case "ps":
-		return app.ps()
+		return app.ps(&bytes.Buffer{})
 	case "clean", "rm":
-		app.clean()
+		app.clean(&bytes.Buffer{})
+		return nil
+	case "stop":
+		return app.stop()
+	default:
+		Help()
+		return nil
+	}
+}
+
+func (app *App) RunWithDefinition(cmd string, definition Definition, writer io.Writer) error {
+	switch cmd {
+	case "start":
+		return app.startWithDefinition(definition, writer)
+	case "ps":
+		return app.ps(writer)
+	case "clean", "rm":
+		buffer := &bytes.Buffer{}
+		app.clean(buffer)
+		writer.Write(buffer.Bytes())
 		return nil
 	case "stop":
 		return app.stop()
@@ -132,11 +180,22 @@ func (app *App) Run(cmd string) error {
 }
 
 func Help() {
-	fmt.Println(`Please specify one of the following commands:
-	start - (start the Containers and executables specified in config)
- 	  ps  - (list all running Containers and executables specified in config)
-	  rm  - (clean all networks, Volumes and Containers)
-	 stop - (stop all running containers)
+	fmt.Println(`Docker Gompose v0.1 
+	To interact with the Gompose server, please use the 'server' command and one of the following:
+		start - (start an instance of the Gompose server)
+		stop  - (stop the currently running instance of the Gompose server)
+
+	Full example:
+		#> gompose server start
+
+	To use the cli interface for invoking commands on the server, please specify one of the following:
+		start - (start the Containers and executables specified in config)
+		ps  - (list all running Containers and executables specified in config)
+		rm  - (clean all networks, Volumes and Containers)
+		stop - (stop all running containers)
+
+	Full example:
+		#> gompose cli ps
 `)
 }
 
@@ -195,7 +254,7 @@ func (app *App) stopProcesses() {
 	}
 }
 
-func (app *App) clean() {
+func (app *App) clean(writer io.Writer) {
 	app.stopProcesses()
 	for name, proc := range app.Containers {
 		if err := app.stopContainer(name, proc); err != nil {
@@ -206,6 +265,7 @@ func (app *App) clean() {
 			log.Println(err)
 		}
 		fmt.Printf("\rRemoving %s [REMOVED]\n", name)
+		writer.Write([]byte(fmt.Sprintf("Removed %s [%v][%v]\n", name, proc.Driver, proc.ID)))
 		delete(app.Containers, name)
 	}
 
@@ -215,6 +275,7 @@ func (app *App) clean() {
 			log.Println(err)
 		}
 		fmt.Printf("\rRemoving Network: %s [REMOVED]\n", app.NetworkID)
+		writer.Write([]byte(fmt.Sprintf("Removing Network: %s [REMOVED]\n", app.NetworkID)))
 		app.NetworkID = ""
 	}
 
@@ -224,21 +285,25 @@ func (app *App) clean() {
 			log.Println(err)
 		}
 		fmt.Printf("\rRemoving Volume: %s [REMOVED]\n", id)
+		writer.Write([]byte(fmt.Sprintf("Removing Volume: %s [REMOVED]\n", name)))
 		delete(app.Volumes, name)
 	}
 }
 
-func (app *App) ps() error {
+func (app *App) ps(writer io.Writer) error {
 	fmt.Printf("\n")
-	buffer := bytes.NewBufferString(fmt.Sprintf("\r%15s | %15s | %10s | %10s\n", "Id", "Name", "Driver", "Status"))
+	buffer := &bytes.Buffer{}
+	buffer.WriteString(fmt.Sprintf("\r%15s | %15s | %10s | %10s\n", "Id", "Name", "Driver", "Status"))
 	buffer.WriteString("-------------------------------------------------------------------------\n")
 	writeProcessPS(buffer, app.Containers)
 	writeProcessPS(buffer, app.Processes)
 	fmt.Println(buffer.String())
+
+	writer.Write(buffer.Bytes())
 	return nil
 }
 
-func (app *App) start() error {
+func (app *App) start(writer io.Writer) error {
 	data, err := ioutil.ReadFile("config.yaml")
 	if err != nil {
 		return err
@@ -250,7 +315,16 @@ func (app *App) start() error {
 		app.createNetworks(),
 		app.registerVolumes(definition.Services),
 		app.createProcesses(definition.Services),
-		app.ps(),
+		app.ps(writer),
+	)
+}
+
+func (app *App) startWithDefinition(definition Definition, writer io.Writer) error {
+	return utils.HandleErrors(utils.ReturnError,
+		app.createNetworks(),
+		app.registerVolumes(definition.Services),
+		app.createProcesses(definition.Services),
+		app.ps(writer),
 	)
 }
 
@@ -386,11 +460,11 @@ func (app *App) createExecProcess(name string, service Service) (func() error, e
 			return fmt.Errorf("could not start process %s: %v, %v", cmd.Path, cmd.Args, err)
 		}
 		app.Processes[name] = Process{
-			ID:     fmt.Sprintf("%d", cmd.Process.Pid),
-			PID:    cmd.Process.Pid,
-			Driver: EXEC,
-			Status: RUNNING,
-			OnStop: service.OnStop,
+			ID:         fmt.Sprintf("%d", cmd.Process.Pid),
+			PID:        cmd.Process.Pid,
+			Driver:     EXEC,
+			Status:     RUNNING,
+			OnStop:     service.OnStop,
 			StopSignal: service.StopSignal,
 		}
 		return nil
@@ -441,9 +515,9 @@ func (app *App) createNewContainer(name string, service Service) (func() error, 
 		}
 	}
 	app.Containers[name] = Process{
-		ID:     c.ID,
-		Driver: DOCKER,
-		Status: RUNNING,
+		ID:         c.ID,
+		Driver:     DOCKER,
+		Status:     RUNNING,
 		StopSignal: service.StopSignal,
 	}
 	logContainerStatus(name, "CREATED", false)

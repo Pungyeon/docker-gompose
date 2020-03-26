@@ -44,5 +44,4 @@ func readToStdOut(reader io.ReadCloser) {
 
 	termFd, isTerm := term.GetFdInfo(os.Stderr)
 	jsonmessage.DisplayJSONMessagesStream(reader, os.Stderr, termFd, isTerm, nil)
-	// io.Copy(os.Stdout, reader)
 }
